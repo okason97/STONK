@@ -20,6 +20,7 @@ RUN pip3 install tensorflow_datasets && \
     pip3 uninstall -y tensorflow && \
     pip3 uninstall -y tensorflow-gpu && \
     pip3 install tensorflow-gpu  && \
+    pip3 install --upgrade tensorflow-probability  && \
     pip3 install -q -U tb-nightly && \
     pip3 install --upgrade tensorflow-hub
 
