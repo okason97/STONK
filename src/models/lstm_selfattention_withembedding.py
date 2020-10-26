@@ -1,7 +1,7 @@
 import tensorflow as tf
 import tensorflow_probability as tfp
 from tensorflow.keras import Model, Sequential
-from tensorflow.keras.layers import Activation, Layer, Dense, Conv1D, BatchNormalization, Dropout, LayerNormalization, LSTM
+from tensorflow.keras.layers import Activation, Layer, Dense, Conv1D, BatchNormalization, Dropout, LayerNormalization, LSTM, Embedding
 import numpy as np
 
 def scaled_dot_product_attention(q, k, v, mask):
@@ -113,9 +113,10 @@ class AttentionBlock(Layer):
 
 class SharedBlock(Layer):
 
-    def __init__(self, hidden_dim=1024, num_filters=128, lstm_units=10, num_blocks=2,
+    def __init__(self, hidden_dim=1024, num_filters=128, lstm_units=10, num_blocks=2, unique_words=124, embedding_out = 8,
                  name="shared block", **kwargs):
         super(SharedBlock, self).__init__(name=name, **kwargs)
+        self.embedding = Embedding(unique_words, embedding_out)
         self.attention_blocks = [AttentionBlock(hidden_dim=hidden_dim, num_filters=num_filters, residual=i!=0,
                                                 last=i==num_blocks-1) 
                                  for i in range(num_blocks)]
@@ -136,7 +137,7 @@ class Critic(Layer):
         self.shared_block = SharedBlock(hidden_dim=hidden_dim, num_filters=num_filters, lstm_units=lstm_units, 
                                         num_blocks=num_blocks)
         self.dense_layer = Dense(num_policies, name='critic_output')
-        
+
     def call(self, x):
         x = self.shared_block(x)
         
@@ -155,7 +156,7 @@ class Actor(Layer):
         x = self.shared_block(x)
 
         return self.dense_layer(x)
-    
+
 class ActorCritic(Model):
 
     def __init__(self, num_policies, hidden_dim=1024, num_filters=128, lstm_units=10, num_blocks=2):

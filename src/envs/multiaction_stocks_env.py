@@ -3,23 +3,28 @@ from sklearn import preprocessing
 import pandas as pd
 import random
 
-class Stocks_env:
+# work in progress
+# stocks env that uses multiple action politics (buy, sell, none)
+
+class MultiactionStocks_env:
 
     def __init__(self, data, batch_size, window_size, run_lenght, 
-                 boundary = 0.5, trader_happiness=0, clip=True, alpha=100):
+                 boundary = 0.5, trader_happiness=0.2, daily_investment=1, clip=True):
         self.data = data
         self.batch_size = batch_size
         self.run_lenght = run_lenght
         self.window_size = window_size
-        self.money = np.zeros(self.batch_size)
-        self.previous_money = np.zeros(self.batch_size)
+        self.batch_data = []
+        self.state_index = 0
+        self.money = 0
+        self.previous_money = 0
         self.boundary = boundary
         self.owned = np.zeros(self.batch_size)
         self.trader_happiness = trader_happiness
+        self.daily_investment = daily_investment
         self.current_symbols = None
         self.current_ending_day = []
         self.clip = clip
-        self.alpha = alpha
 
         # fit normalizer
         fit_data = self.data.drop(["symbol"], axis=1)
@@ -44,14 +49,17 @@ class Stocks_env:
     def get_test_symbols(self):
         return self.test_symbols
 
-    def reset(self, trader_happiness=None, training=True, batch_size=None):
+    def reset(self, trader_happiness=None, daily_investment=None, training=True, batch_size=None):
         self.state_index = 0
+        self.money = 0
+        self.previous_money = 0
         if batch_size:
             self.batch_size = batch_size
-        self.money = np.zeros(self.batch_size)
-        self.previous_money = np.zeros(self.batch_size)
+        if trader_happiness:
+            self.trader_happiness = trader_happiness
+        if daily_investment:
+            self.daily_investment = daily_investment
         self.owned = np.zeros(self.batch_size)
-        self.trader_happiness = trader_happiness
         self.current_ending_day = []
         self.batch_data = []
         if training:
@@ -77,36 +85,37 @@ class Stocks_env:
         # get next state
         next_state = list(map(lambda x: self.scaler.transform(x[self.state_index:current_day]), self.batch_data))
 
-        # buy/sell following short or long strategies
-        total_investment = 0
         operations = np.zeros(self.batch_size)
-        profits = np.zeros(self.batch_size)
+
+        # buy/sell following short or long strategies
+        stocks_price = 0
+        total_investment = 0
         for i in range(self.batch_size):
             if self.clip:
-                investment = abs(np.clip(np.array(action[i]),-(1+self.boundary),1+self.boundary))-self.boundary
+                investment = abs(np.max(np.clip(np.array(action[i]),-1,1)))*self.daily_investment
             else:
-                investment = abs(action[i])-self.boundary
+                investment = abs(action[i])*self.daily_investment                
             traded = investment/float(self.batch_data[i].iloc[[current_day+1]].close)
-            if action[i]>self.boundary:
-                # positive buy/sell policy -> buy
+            if np.argmax(action[i])==0:
+                # max buy policy
                 total_investment += investment
                 self.owned[i] += traded
                 operations[i] = investment
-                self.money[i] = self.money[i] - investment
-            elif action[i]<-self.boundary:
-                # negative buy/sell policy -> sell
-                # make traded positive for later usage on the reward calculation
+                self.money = self.money - investment
+            elif np.argmax(action[i])==1:
+                # max sell policy
+                # make investment positive for later usage on the reward calculation
                 total_investment += investment
                 self.owned[i] -= traded
                 operations[i] = -investment
-                self.money[i] = self.money[i] + investment
+                self.money = self.money + investment
+            stocks_price += self.owned[i]*float(self.batch_data[i].iloc[[current_day+1]].close)
 
-            # calculate profit (reward)
-            owned_price = self.owned[i]*float(self.batch_data[i].iloc[[current_day+1]].close) + self.money[i]
-            profits[i] = owned_price-self.previous_money[i]
-            self.previous_money[i] = owned_price
-
-        reward = self.alpha*((np.sum(profits)/self.batch_size)*(1-self.trader_happiness)+total_investment*self.trader_happiness)
+        # calculate profit (reward)
+        owned_price = stocks_price + self.money
+        profit = owned_price-self.previous_money
+        self.previous_money = owned_price
+        reward = profit/self.batch_size*(1-self.trader_happiness)+total_investment*self.trader_happiness
 
         self.state_index += 1
 
