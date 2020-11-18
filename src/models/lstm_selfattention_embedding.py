@@ -1,7 +1,7 @@
 import tensorflow as tf
 import tensorflow_probability as tfp
 from tensorflow.keras import Model, Sequential
-from tensorflow.keras.layers import Activation, Layer, Dense, Conv1D, BatchNormalization, Dropout, LayerNormalization, LSTM, Embedding
+from tensorflow.keras.layers import Activation, Layer, Dense, Conv1D, BatchNormalization, Dropout, LayerNormalization, LSTM, Embedding, Bidirectional
 import numpy as np
 
 def scaled_dot_product_attention(q, k, v, mask):
@@ -113,17 +113,23 @@ class AttentionBlock(Layer):
 
 class SharedBlock(Layer):
 
-    def __init__(self, hidden_dim=1024, num_filters=128, lstm_units=10, num_blocks=2, unique_words=124, embedding_out = 8,
-                 name="shared block", **kwargs):
+    def __init__(self, hidden_dim=1024, num_filters=128, lstm_units=10, num_blocks=2, vocabulary_size=184, embedding_out = 8,
+                 text_lenght=5, in_lstm_units = 32, name="shared block", **kwargs):
         super(SharedBlock, self).__init__(name=name, **kwargs)
-        self.embedding = Embedding(unique_words, embedding_out)
+        self.embedding = Embedding(vocabulary_size, embedding_out, input_length=text_lenght)
+        self.bidirectional_lstm = Bidirectional(LSTM(in_lstm_units))
         self.attention_blocks = [AttentionBlock(hidden_dim=hidden_dim, num_filters=num_filters, residual=i!=0,
                                                 last=i==num_blocks-1) 
                                  for i in range(num_blocks)]
         self.lstm_layer = LSTM(lstm_units)
 
-    def call(self, x, training, mask=None):
+    def call(self, x, z, training, mask=None):
         
+        z = self.embedding(z)
+        z = self.bidirectional_lstm(z)
+        z = tf.reshape(tf.tile(z, [x.shape[1], 1]),
+                       [x.shape[0], x.shape[1], z.shape[1]])
+        x = tf.concat([x, z], -1)
         for attention_block in self.attention_blocks:
             x = attention_block(x)
         
@@ -131,47 +137,53 @@ class SharedBlock(Layer):
 
 class Critic(Layer):
 
-    def __init__(self, num_policies, hidden_dim=1024, num_filters=128, lstm_units=10, num_blocks=2,
-                 name="critic", **kwargs):
+    def __init__(self, num_policies, hidden_dim=1024, num_filters=128, lstm_units=10, num_blocks=2, vocabulary_size=184,
+                 embedding_out = 8, in_lstm_units = 32, text_lenght=5, name="critic", **kwargs):
         super(Critic, self).__init__(name=name, **kwargs)
         self.shared_block = SharedBlock(hidden_dim=hidden_dim, num_filters=num_filters, lstm_units=lstm_units, 
-                                        num_blocks=num_blocks)
+                                        num_blocks=num_blocks, vocabulary_size=vocabulary_size, text_lenght=5, 
+                                        in_lstm_units = in_lstm_units, embedding_out = embedding_out)
         self.dense_layer = Dense(num_policies, name='critic_output')
 
-    def call(self, x):
-        x = self.shared_block(x)
+    def call(self, x, z):
+        x = self.shared_block(x, z)
         
         return self.dense_layer(x)
 
 class Actor(Layer):
 
-    def __init__(self, hidden_dim=1024, num_filters=128, lstm_units=10, num_blocks=2,
-                 name="actor", **kwargs):
+    def __init__(self, hidden_dim=1024, num_filters=128, lstm_units=10, num_blocks=2, vocabulary_size=184, embedding_out = 8,
+                 text_lenght=5, in_lstm_units = 32, name="actor", **kwargs):
         super(Actor, self).__init__(name=name, **kwargs)
         self.shared_block = SharedBlock(hidden_dim=hidden_dim, num_filters=num_filters, lstm_units=lstm_units,
-                                        num_blocks=num_blocks)
+                                        num_blocks=num_blocks, vocabulary_size=vocabulary_size, text_lenght=5,
+                                        in_lstm_units = in_lstm_units, embedding_out = embedding_out)
         self.dense_layer = Dense(1, name='actor_output')
 
-    def call(self, x):
-        x = self.shared_block(x)
+    def call(self, x, z):
+        x = self.shared_block(x, z)
 
         return self.dense_layer(x)
 
 class ActorCritic(Model):
 
-    def __init__(self, num_policies, hidden_dim=1024, num_filters=128, lstm_units=10, num_blocks=2):
+    def __init__(self, num_policies, hidden_dim=1024, num_filters=128, lstm_units=10, num_blocks=2, 
+                 vocabulary_size=184, text_lenght=5, in_lstm_units = 32, embedding_out = 8):
         super(ActorCritic, self).__init__()
-        self.critic = Critic(num_policies = num_policies, hidden_dim=hidden_dim, 
-                             num_filters=num_filters, lstm_units=lstm_units, num_blocks=num_blocks)
-        self.actor = Actor(hidden_dim=hidden_dim, num_filters=num_filters, lstm_units=lstm_units, num_blocks=num_blocks)
+        self.critic = Critic(num_policies = num_policies, hidden_dim=hidden_dim, text_lenght=5, 
+                             num_filters=num_filters, lstm_units=lstm_units, num_blocks=num_blocks, 
+                             in_lstm_units = in_lstm_units, vocabulary_size=vocabulary_size, embedding_out = embedding_out)
+        self.actor = Actor(hidden_dim=hidden_dim, num_filters=num_filters, lstm_units=lstm_units, num_blocks=num_blocks, 
+                           in_lstm_units = in_lstm_units, text_lenght=5, embedding_out = embedding_out,
+                           vocabulary_size=vocabulary_size)
         self.logstd = tf.Variable(np.zeros([1, num_policies]),  dtype=tf.float32 ,name='logstd')
 
-    def call(self, x):
+    def call(self, x, z):
         # Actor
-        value = self.actor(x)
+        value = self.actor(x, z)
 
         # Critic
-        critic_output = self.critic(x)
+        critic_output = self.critic(x, z)
         std = tf.zeros_like(critic_output) + tf.exp(self.logstd)
         dist = tfp.distributions.Normal(loc=critic_output, scale=std)
 
