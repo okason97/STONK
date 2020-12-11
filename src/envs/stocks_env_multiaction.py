@@ -7,23 +7,22 @@ class Stocks_env:
 
     def __init__(self, data, batch_size, window_size, run_lenght, 
                  boundary = 0.5, clip=True, tokenized_industry=None, 
-                 test_seed = None):
+                 test_seed = None, initial_money=1000):
         self.data = data
         self.batch_size = batch_size
         self.run_lenght = run_lenght
         self.window_size = window_size
-        self.money = np.zeros(self.batch_size)
-        self.previous_money = np.zeros(self.batch_size)
+        self.initial_money = initial_money
+        self.money = np.full(self.batch_size, self.initial_money, dtype=float)
+        self.previous_money = np.zeros(self.batch_size, dtype=float)
         self.boundary = boundary
-        self.owned = np.zeros(self.batch_size)
+        self.owned = np.zeros(self.batch_size, dtype=float)
         self.current_symbols = None
         self.current_ending_day = []
         self.clip = clip
         self.tokenized_industry = tokenized_industry
-        self.profits = None
-        self.operations = None
         if len(self.tokenized_industry):
-            self.tokenized_industry_state = np.empty((self.batch_size, self.tokenized_industry.shape[1]-1))
+            self.tokenized_industry_state = np.empty((self.batch_size, self.tokenized_industry.shape[1]-1), dtype=float)
 
         
         if test_seed:
@@ -48,7 +47,7 @@ class Stocks_env:
         return (self.window_size, 80)
 
     def get_action_space(self):
-        return (1)
+        return (2)
 
     def get_scaler(self):
         return self.scaler
@@ -63,15 +62,13 @@ class Stocks_env:
         self.state_index = 0
         if batch_size:
             self.batch_size = batch_size
-        self.profits = np.zeros(self.batch_size)
-        self.operations = np.zeros(self.batch_size)
-        self.money = np.zeros(self.batch_size)
-        self.previous_money = np.zeros(self.batch_size)
-        self.owned = np.zeros(self.batch_size)
+        self.money = np.full(self.batch_size, self.initial_money, dtype=float)
+        self.previous_money = np.zeros(self.batch_size, dtype=float)
+        self.owned = np.zeros(self.batch_size, dtype=float)
         self.current_ending_day = []
         self.batch_data = []
         if len(self.tokenized_industry):
-            self.tokenized_industry_state = np.empty((self.batch_size, self.tokenized_industry.shape[1]-1))
+            self.tokenized_industry_state = np.empty((self.batch_size, self.tokenized_industry.shape[1]-1), dtype=float)
         if training:
             r = np.random
             sampled_symbols = r.choice(self.train_symbols, self.batch_size, replace=False)
@@ -106,46 +103,41 @@ class Stocks_env:
         current_day = self.state_index+self.window_size
         daily_change = 0
 
-        # get next state
-        next_state = np.array(list(map(lambda x: self.scaler.transform(x[self.state_index:current_day]), self.batch_data)))
-
+        operations = np.zeros(self.batch_size, dtype=float)
+        profits = np.zeros(self.batch_size, dtype=float)
+        
         # buy/sell following short or long strategies
-        total_investment = 0
         for i in range(self.batch_size):
 
-            if self.clip:
-                investment = abs(np.clip(np.array(action[i]),-(1+self.boundary),1+self.boundary))-self.boundary
-            else:
-                investment = abs(action[i])-self.boundary
             close = float(self.batch_data[i].iloc[[current_day]].close)
             next_day_close = float(self.batch_data[i].iloc[[current_day+1]].close)
-            traded = investment/close
-            if action[i]>self.boundary:
+            if action[i][0]>=action[i][1]:
                 # positive buy/sell policy -> buy
-                total_investment += investment
-                self.owned[i] += traded
-                self.operations[i] = investment
-                self.money[i] = self.money[i] - investment
-            elif action[i]<-self.boundary:
-                # negative buy/sell policy -> sell
-                # make traded positive for later usage on the reward calculation
-                total_investment += investment
-                self.owned[i] -= traded
-                self.operations[i] = -investment
-                self.money[i] = self.money[i] + investment
+                if self.money[i]<action[i][0]:
+                    investment = self.money[i]
+                else:
+                    investment = action[i][0]
             else:
-                self.operations[i] = 0                          
+                # negative buy/sell policy -> sell
+                investment = -action[i][1]
+            self.owned[i] += investment/close
+            operations[i] = investment
+            self.money[i] = self.money[i] - investment
 
-            daily_change += abs(1/close*next_day_close - 1)
             # calculate profit (reward)
+            daily_change += abs(next_day_close-close)/close
             self.previous_money[i] = self.owned[i]*close + self.money[i]
             next_day_money = self.owned[i]*next_day_close + self.money[i]
-            self.profits[i] = next_day_money-self.previous_money[i]
+            profits[i] = next_day_money-self.previous_money[i]
 
         daily_change = daily_change/self.batch_size
-        reward = np.sum(self.profits)/self.batch_size
 
+        # get next state
         self.state_index += 1
+        next_state = np.array(list(map(lambda x: self.scaler.transform(x[self.state_index:current_day+1]), self.batch_data)))
+
+        if len(self.tokenized_industry):
+            next_state = [next_state, np.array(self.tokenized_industry_state)]
 
         # finished the run?
         if self.state_index >= self.run_lenght:
@@ -153,7 +145,4 @@ class Stocks_env:
         else:
             done = False
 
-        if len(self.tokenized_industry):
-            next_state = [next_state, np.array(self.tokenized_industry_state)]
-
-        return next_state, reward, done, self.operations, np.array(self.current_ending_day)+self.state_index-self.run_lenght+1, daily_change
+        return next_state, profits, done, operations, np.array(self.current_ending_day)+self.state_index-self.run_lenght, daily_change
