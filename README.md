@@ -1,5 +1,4 @@
 # STONK
-![STONKS](/images/STONKS.png)
 
 Stocks
 Trading
