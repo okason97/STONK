@@ -25,15 +25,15 @@ def load_data(data_folder):
 
     return data
 
-def load_data_with_industry(data_folder):
+def load_data_with_industry(data_folder, column="GICS Sub Industry"):
     data = load_data(data_folder)
     
     details = pd.read_csv(data_folder+'854_1575_bundle_archive/securities.csv')
 
     tokenizer = tf.keras.preprocessing.text.Tokenizer()
-    tokenizer.fit_on_texts(details["GICS Sub Industry"])
+    tokenizer.fit_on_texts(details[column])
 
-    tokenized_industry = tokenizer.texts_to_sequences(details["GICS Sub Industry"])
+    tokenized_industry = tokenizer.texts_to_sequences(details[column])
     tokenized_industry = tf.keras.preprocessing.sequence.pad_sequences(tokenized_industry, padding='post')
     tokenized_industry = np.append(np.array(details["Ticker symbol"]).reshape((505,1)), tokenized_industry, axis=-1)
 

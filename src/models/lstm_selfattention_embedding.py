@@ -177,6 +177,7 @@ class ActorCritic(Model):
                            in_lstm_units = in_lstm_units, text_lenght=5, embedding_out = embedding_out,
                            vocabulary_size=vocabulary_size)
         self.logstd = tf.Variable(np.zeros([1, num_policies]),  dtype=tf.float32 ,name='logstd')
+        self.activation_layer = Activation('sigmoid')
 
     def call(self, x, z):
         # Critic
@@ -185,6 +186,6 @@ class ActorCritic(Model):
         # Actor
         actor_output = self.actor(x, z)
         std = tf.zeros_like(actor_output) + tf.exp(self.logstd)
-        dist = tfp.distributions.Normal(loc=actor_output, scale=std)
+        dist = tfp.distributions.Normal(loc=self.activation_layer(actor_output), scale=std)
 
         return value, dist    
