@@ -74,7 +74,7 @@ class MultiHeadAttention(Layer):
 
 class AttentionBlock(Layer):
 
-    def __init__(self, hidden_dim=1024, num_filters=128,
+    def __init__(self, hidden_dim=1024, num_filters=128, kernel_size=5,
                  name="attention block", rate=0.1, residual=True, last=False, **kwargs):
         super(AttentionBlock, self).__init__(name=name, **kwargs)
         self.attention_layer = MultiHeadAttention(d_model=hidden_dim, num_heads=8)
@@ -82,7 +82,7 @@ class AttentionBlock(Layer):
         self.layernorm1 = LayerNormalization(epsilon=1e-6)
         self.cnn_layer = Conv1D(
             filters=num_filters,
-            kernel_size=2,
+            kernel_size=kernel_size,
             # Use 'same' padding so outputs have the same shape as inputs.
             padding='same')
         self.activation_layer = Activation('relu')
@@ -114,7 +114,7 @@ class AttentionBlock(Layer):
 class SharedBlock(Layer):
 
     def __init__(self, hidden_dim=1024, num_filters=128, lstm_units=10, num_blocks=2, vocabulary_size=184, embedding_out = 8,
-                 text_lenght=5, in_lstm_units = 32, name="shared block", **kwargs):
+                 text_lenght=5, in_lstm_units = 32, name="shared block", kernel_size=5, **kwargs):
         super(SharedBlock, self).__init__(name=name, **kwargs)
         self.embedding = Embedding(vocabulary_size, embedding_out, input_length=text_lenght)
         self.bidirectional_lstm = Bidirectional(LSTM(in_lstm_units))
@@ -138,7 +138,7 @@ class SharedBlock(Layer):
 class Actor(Layer):
 
     def __init__(self, num_policies, hidden_dim=1024, num_filters=128, lstm_units=10, num_blocks=2, vocabulary_size=184,
-                 embedding_out = 8, in_lstm_units = 32, text_lenght=5, name="actor", **kwargs):
+                 embedding_out = 8, in_lstm_units = 32, text_lenght=5, kernel_size=5, name="actor", **kwargs):
         super(Actor, self).__init__(name=name, **kwargs)
         self.shared_block = SharedBlock(hidden_dim=hidden_dim, num_filters=num_filters, lstm_units=lstm_units, 
                                         num_blocks=num_blocks, vocabulary_size=vocabulary_size, text_lenght=5, 
@@ -153,7 +153,7 @@ class Actor(Layer):
 class Critic(Layer):
 
     def __init__(self, hidden_dim=1024, num_filters=128, lstm_units=10, num_blocks=2, vocabulary_size=184, embedding_out = 8,
-                 text_lenght=5, in_lstm_units = 32, name="critic", **kwargs):
+                 text_lenght=5, in_lstm_units = 32, kernel_size=5, name="critic", **kwargs):
         super(Critic, self).__init__(name=name, **kwargs)
         self.shared_block = SharedBlock(hidden_dim=hidden_dim, num_filters=num_filters, lstm_units=lstm_units,
                                         num_blocks=num_blocks, vocabulary_size=vocabulary_size, text_lenght=5,
@@ -168,7 +168,8 @@ class Critic(Layer):
 class ActorCritic(Model):
 
     def __init__(self, num_policies, hidden_dim=1024, num_filters=128, lstm_units=10, num_blocks=2, 
-                 vocabulary_size=184, text_lenght=5, in_lstm_units = 32, embedding_out = 8):
+                 vocabulary_size=184, text_lenght=5, kernel_size=5, in_lstm_units = 32, embedding_out = 8,
+                 actor_activation=False):
         super(ActorCritic, self).__init__()
         self.actor = Actor(num_policies = num_policies, hidden_dim=hidden_dim, text_lenght=5, 
                              num_filters=num_filters, lstm_units=lstm_units, num_blocks=num_blocks, 
@@ -177,15 +178,19 @@ class ActorCritic(Model):
                            in_lstm_units = in_lstm_units, text_lenght=5, embedding_out = embedding_out,
                            vocabulary_size=vocabulary_size)
         self.logstd = tf.Variable(np.zeros([1, num_policies]),  dtype=tf.float32 ,name='logstd')
-        self.activation_layer = Activation('sigmoid')
+        self.actor_activation = actor_activation
+        if self.actor_activation:
+            self.actor_activation_layer = Activation('sigmoid')
 
     def call(self, x, z):
-        # Critic
+        # Critic        
         value = self.critic(x, z)
 
         # Actor
         actor_output = self.actor(x, z)
         std = tf.zeros_like(actor_output) + tf.exp(self.logstd)
-        dist = tfp.distributions.Normal(loc=self.activation_layer(actor_output), scale=std)
+        if self.actor_activation:
+            actor_output = self.actor_activation_layer(actor_output)
+        dist = tfp.distributions.Normal(loc=actor_output, scale=std)
 
         return value, dist    

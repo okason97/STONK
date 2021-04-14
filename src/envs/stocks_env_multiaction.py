@@ -14,6 +14,8 @@ class Stocks_env:
                  boundary = 0.5, tokenized_industry=[], train_test_ratio=0.2,
                  test_seed = None, initial_money=1000, with_hold=False, normalize=True):
         self.data = data
+        self.grouped_data = {}
+        self.standarized_grouped_data = {}
         self.batch_size = batch_size
         self.run_lenght = run_lenght
         self.window_size = window_size
@@ -39,14 +41,19 @@ class Stocks_env:
         else:
             self.test_seed = None
 
+        unique_symbols = pd.unique(self.data.symbol)
+
         if normalize:
             # fit normalizer
-            fit_data = self.data.drop(["symbol"], axis=1)
-            self.scaler = preprocessing.StandardScaler().fit(fit_data)
+            self.data = self.data.drop(["symbol"], axis=1)
+            self.scaler = preprocessing.StandardScaler().fit(self.data)
         else:
             self.scaler = EmptyScaler()
 
-        unique_symbols = pd.unique(self.data.symbol)
+        for symbol in unique_symbols:
+            self.grouped_data[symbol] = data[data.symbol==symbol].drop(["symbol"], axis=1)
+            self.standarized_grouped_data[symbol] = self.scaler.transform(self.grouped_data[symbol])
+         
         if self.test_seed:
             r = np.random.RandomState(self.test_seed)
         else:
@@ -72,8 +79,10 @@ class Stocks_env:
     def get_test_symbols(self):
         return self.test_symbols
 
-    def reset(self, training=True, batch_size=None, run_lenght=None, initial_money=None):
+    def reset(self, training=True, batch_size=None, run_lenght=None, initial_money=None, random_reset=True):
         self.state_index = 0
+        if random_reset:
+            self.random_reset = random_reset
         if batch_size:
             self.batch_size = batch_size
             self.operations = np.zeros(self.batch_size, dtype=float)
@@ -86,37 +95,36 @@ class Stocks_env:
         self.money = np.full(self.batch_size, self.initial_money, dtype=float)
         self.owned = np.zeros(self.batch_size, dtype=float)
         self.current_ending_day = []
-        self.batch_data = []
+        self.standarized_batch_data = np.zeros((self.batch_size,self.window_size+self.run_lenght+1,80), dtype=np.float32)
+        self.batch_data = np.zeros((self.batch_size,self.window_size+self.run_lenght+1,80))
         if len(self.tokenized_industry):
             self.tokenized_industry_state = np.empty((self.batch_size, self.tokenized_industry.shape[1]-1), dtype=float)
         if training:
             r = np.random
             sampled_symbols = r.choice(self.train_symbols, self.batch_size, replace=False)
+            r = np.random
         else:
             if self.test_seed and not self.random_reset:
                 r = np.random.RandomState(self.test_seed)
                 sampled_symbols = r.choice(self.test_symbols, self.batch_size, replace=False)            
-                r = np.random
             else:
                 r = np.random
                 sampled_symbols = r.choice(self.test_symbols, self.batch_size, replace=False)            
         self.current_symbols = sampled_symbols
         self.current_end_index = []
-        if len(self.tokenized_industry):
-            current_index = 0
+        current_index = 0
         for symbol in sampled_symbols:
-            end_index = r.randint(self.window_size+self.run_lenght+1, len(self.data[self.data.symbol==symbol])+1)
+            end_index = r.randint(self.window_size+self.run_lenght+1, len(self.grouped_data[symbol])+1)
             self.current_ending_day.append(end_index)
-            selected_data = self.data[self.data.symbol==symbol][end_index-(self.window_size+self.run_lenght+1):end_index]
-            selected_data = selected_data.drop(["symbol"], axis=1)
-            self.batch_data.append(selected_data.astype('float32'))
+            self.batch_data[current_index] = self.grouped_data[symbol][end_index-(self.window_size+self.run_lenght+1):end_index]
+            self.standarized_batch_data[current_index] = self.standarized_grouped_data[symbol][end_index-(self.window_size+self.run_lenght+1):end_index]
 
             if len(self.tokenized_industry):
                 i = np.argwhere(self.tokenized_industry[:,0]==symbol)[0,0]
                 self.tokenized_industry_state[current_index] = self.tokenized_industry[i][1:]
-                current_index += 1
+            current_index += 1
                 
-        state = np.array(list(map(lambda x: self.scaler.transform(x[0:self.window_size]), self.batch_data)))
+        state = self.standarized_batch_data[:,0:self.window_size]
         if len(self.tokenized_industry):
             state = [state, np.array(self.tokenized_industry_state)]
         return state
@@ -127,8 +135,8 @@ class Stocks_env:
         # buy/sell/hold following short or long strategies
 
         for i in range(self.batch_size):
-            close = float(self.batch_data[i].iloc[[current_day]].close)
-            next_day_close = float(self.batch_data[i].iloc[[current_day+1]].close)
+            close = self.batch_data[i,current_day,self.data.columns.get_loc("close")]
+            next_day_close = self.batch_data[i,current_day+1,self.data.columns.get_loc("close")]
             selected_action = tf.math.argmax(action[i])
             if selected_action == 0 and action[i][0]>0:
                 # buy
@@ -151,12 +159,12 @@ class Stocks_env:
             # calculate reward
             previous_money = self.owned[i]*close + self.money[i]
             next_day_money = self.owned[i]*next_day_close + self.money[i]
-            self.profits[i] = next_day_money-previous_money
-            self.rewards[i] = self.profits[i]
+            self.rewards[i] = next_day_money-previous_money
+            self.profits[i] = self.rewards[i]
 
         # get next state
         self.state_index += 1
-        next_state = np.array(list(map(lambda x: self.scaler.transform(x[self.state_index:current_day+1]), self.batch_data)))
+        next_state = self.standarized_batch_data[:,self.state_index:current_day+1]
 
         if len(self.tokenized_industry):
             next_state = [next_state, np.array(self.tokenized_industry_state)]

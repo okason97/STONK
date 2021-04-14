@@ -15,7 +15,7 @@ class SharedBlock(Layer):
         self.dropout = Dropout(rate)
         self.cnn_layer = Conv1D(
             filters=num_filters,
-            kernel_size=2,
+            kernel_size=3,
             # Use 'same' padding so outputs have the same shape as inputs.
             padding='same')
         self.activation_layer = Activation('relu')
